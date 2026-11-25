@@ -5,7 +5,7 @@ Draws a newspaper front page summing up the day's world news and writes
 it to /output/entry.png (or $MAKEFUN_OUTPUT_DIR/entry.png).
 
 Pure stdlib + Pillow, no network, no file reads, fully deterministic:
-the same run always writes the same bytes.
+running it twice produces the same bytes.
 """
 
 import os
@@ -13,224 +13,220 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 1024, 1024
-MARGIN = 36
-CW = W - 2 * MARGIN  # 952
+PAGE_W = 1024
+PAGE_H = 1024
+EDGE = 40
+INNER = PAGE_W - 2 * EDGE  # 944
 
-PAPER = (248, 244, 233)
-INK = (26, 26, 26)
-MUTED = (90, 83, 72)
-RED = (163, 22, 33)
-GREEN = (18, 110, 58)
-RULE = (26, 26, 26)
-PANEL = (240, 234, 219)
-PANEL_EDGE = (180, 172, 150)
+PAPER_RGB = (250, 246, 236)
+INK_RGB = (24, 24, 24)
+FAINT_RGB = (96, 89, 78)
+RED_RGB = (168, 24, 34)
+GREEN_RGB = (16, 104, 56)
+LINE_RGB = (24, 24, 24)
+BOX_RGB = (242, 236, 221)
+BOX_LINE_RGB = (182, 174, 152)
 
-FONT_PATHS = {
+FONTS = {
     "serif": "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-    "serif_bold": "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+    "serif_b": "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
     "sans": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "sans_bold": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "sans_b": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 }
 
 
-def font(name, size):
-    path = FONT_PATHS[name]
+def load(name, size):
     try:
-        return ImageFont.truetype(path, size)
+        return ImageFont.truetype(FONTS[name], size)
     except OSError:
         return ImageFont.load_default(size=size)
 
 
-def wrap(draw, text, fnt, max_width):
-    """Greedy word wrap; returns a list of lines that fit max_width."""
-    lines = []
-    for para in text.split("\n"):
-        words = para.split()
-        if not words:
-            lines.append("")
-            continue
-        cur = words[0]
-        for word in words[1:]:
-            trial = cur + " " + word
-            if draw.textlength(trial, font=fnt) <= max_width:
-                cur = trial
-            else:
-                lines.append(cur)
-                cur = word
-        lines.append(cur)
-    return lines
+class Poster:
+    """A 1024x1024 front page drawn section by section, top to bottom."""
 
+    def __init__(self):
+        self.img = Image.new("RGB", (PAGE_W, PAGE_H), PAPER_RGB)
+        self.d = ImageDraw.Draw(self.img)
 
-def text_block(draw, x, y, text, fnt, max_width, fill=INK, spacing=5,
-               max_lines=None):
-    """Draw wrapped text; returns the y just below the last line."""
-    lines = wrap(draw, text, fnt, max_width)
-    if max_lines is not None and len(lines) > max_lines:
-        raise ValueError("text overflows: %r needs %d lines, max %d"
-                         % (text[:40], len(lines), max_lines))
-    for line in lines:
-        draw.text((x, y), line, font=fnt, fill=fill)
-        y += fnt.size + spacing
-    return y
+    def hline(self, y, x0=None, x1=None, w=2):
+        a = EDGE if x0 is None else x0
+        b = PAGE_W - EDGE if x1 is None else x1
+        self.d.line([(a, y), (b, y)], fill=LINE_RGB, width=w)
+        return y + w
 
+    def centred(self, y, text, font, fill=INK_RGB):
+        w = self.d.textlength(text, font=font)
+        self.d.text(((PAGE_W - w) / 2, y), text, font=font, fill=fill)
+        return y + font.size
 
-def centered(draw, y, text, fnt, fill=INK):
-    w = draw.textlength(text, font=fnt)
-    draw.text(((W - w) / 2, y), text, font=fnt, fill=fill)
-    return y + fnt.size
+    def wrap(self, text, font, width):
+        out = []
+        for chunk in text.split("\n"):
+            words = chunk.split()
+            if not words:
+                out.append("")
+                continue
+            cur = words[0]
+            for word in words[1:]:
+                cand = cur + " " + word
+                if self.d.textlength(cand, font=font) <= width:
+                    cur = cand
+                else:
+                    out.append(cur)
+                    cur = word
+            out.append(cur)
+        return out
 
+    def block(self, x, y, text, font, width, gap=4, limit=None,
+              fill=INK_RGB):
+        lines = self.wrap(text, font, width)
+        if limit is not None and len(lines) > limit:
+            raise ValueError("overflow: %r needs %d lines, limit %d"
+                             % (text[:30], len(lines), limit))
+        for ln in lines:
+            self.d.text((x, y), ln, font=font, fill=fill)
+            y += font.size + gap
+        return y
 
-def rule(draw, y, x0=None, x1=None, width=2):
-    x0 = MARGIN if x0 is None else x0
-    x1 = W - MARGIN if x1 is None else x1
-    draw.line([(x0, y), (x1, y)], fill=RULE, width=width)
-    return y + width
+    def masthead(self):
+        self.centred(28, "THE WORLD IN ONE PAGE",
+                     load("serif_b", 56))
+        self.centred(100, "WEDNESDAY, 25 NOVEMBER 2026",
+                     load("sans_b", 24), fill=RED_RGB)
+        self.centred(134, "THE DAY'S WORLD NEWS  -  ONE PAGE, EVERY "
+                          "STORY THAT MATTERED",
+                     load("sans", 13), fill=FAINT_RGB)
+        self.hline(158)
 
+    def lead(self):
+        x = EDGE
+        y = 172
+        self.d.text((x, y), "LEAD STORY  -  SPACE",
+                    font=load("sans_b", 16), fill=RED_RGB)
+        y = self.block(x, 204,
+                       "Shenzhou-24 lifts off -\nfirst foreigner in orbit",
+                       load("serif_b", 36), 600, gap=4, limit=2)
+        self.block(x, 292,
+                   "China launched Shenzhou-24 from Jiuquan at 08:18 on "
+                   "Wednesday, carrying Tang Hongbo, Wu Yi and Pakistani "
+                   "payload specialist Muhammad Zeeshan Ali - the first "
+                   "Pakistani in orbit and the first foreign astronaut to "
+                   "visit China's Tiangong station. Docking was due about "
+                   "three and a half hours after liftoff.",
+                   load("sans", 18), 600, gap=6, limit=5)
+        # Numbers panel on the right of the lead story.
+        px0, py0, px1, py1 = 700, 172, PAGE_W - EDGE, 420
+        self.d.rectangle([px0, py0, px1, py1], fill=BOX_RGB,
+                         outline=BOX_LINE_RGB, width=2)
+        cx = px0 + 18
+        lab = load("sans_b", 14)
+        self.d.text((cx, py0 + 12), "THE LAUNCH IN NUMBERS",
+                    font=lab, fill=FAINT_RGB)
+        self.d.text((cx, py0 + 34), "08:18",
+                    font=load("sans_b", 48), fill=GREEN_RGB)
+        cap = load("sans", 15)
+        self.d.text((cx, py0 + 88), "Liftoff, Jiuquan, Wednesday",
+                    font=cap, fill=INK_RGB)
+        self.d.text((cx, py0 + 106),
+                    "Long March-2F rocket, three crew,",
+                    font=cap, fill=INK_RGB)
+        self.d.text((cx, py0 + 124), "docking ~3.5 hours later.",
+                    font=cap, fill=INK_RGB)
+        self.hline(py0 + 150, x0=px0 + 18, x1=px1 - 18, w=1)
+        self.d.text((cx, py0 + 160), "THE CREW", font=lab, fill=FAINT_RGB)
+        crew_f = load("sans", 14)
+        crew = [("Tang Hongbo", "commander"),
+                ("Wu Yi", "flight engineer"),
+                ("M. Zeeshan Ali", "payload specialist")]
+        by = py0 + 180
+        for name, role in crew:
+            self.d.text((cx, by), name, font=crew_f, fill=INK_RGB)
+            self.d.text((cx + 118, by), role, font=crew_f, fill=FAINT_RGB)
+            by += 18
+        self.hline(436)
 
-def draw_masthead(draw):
-    title = font("serif_bold", 60)
-    centered(draw, 26, "THE WORLD IN ONE PAGE", title)
-    date_f = font("sans_bold", 26)
-    centered(draw, 102, "WEDNESDAY, 25 NOVEMBER 2026", date_f, fill=RED)
-    sub_f = font("sans", 13)
-    centered(draw, 140,
-             "THE DAY'S WORLD NEWS  -  ONE PAGE, EVERY STORY THAT MATTERED",
-             sub_f, fill=MUTED)
-    rule(draw, 164)
+    def grid(self):
+        stories = [
+            ("ECONOMY",
+             "Australia's inflation\njumps to 4.9%",
+             "October CPI rose 4.9% from a year earlier, above the 4.8% "
+             "forecast and up from 4.3% in September. Core inflation hit "
+             "3.8%, keeping another rate rise in play."),
+            ("TRADE",
+             "US set to unveil new\nSection 301 tariffs",
+             "Washington is poised to release findings of its probe into "
+             "excess factory capacity in 16 trading partners, with new "
+             "duties expected as soon as Tuesday or Wednesday."),
+            ("ECONOMY",
+             "US inflation and GDP\ndata due tonight",
+             "October PCE - the Fed's preferred inflation gauge - and the "
+             "second estimate of third-quarter GDP land at 8:30 a.m. ET, "
+             "the last big data before the Fed's December meeting."),
+            ("MARKETS",
+             "Nvidia bounce fades;\nNasdaq falls 1.5%",
+             "Nvidia shares slid 6% on Tuesday after Monday's 31.5% surge "
+             "on Jensen Huang's return. The S&P 500 fell 0.5% as "
+             "investors turned to Wednesday's US data."),
+            ("UNITED KINGDOM",
+             "Bank of England chief\nfaces MPs today",
+             "Governor Andrew Bailey faces MPs at 14:15 with three "
+             "rate-setters to defend November's rate rise to 4%; Ofgem "
+             "sets the energy cap today."),
+            ("BUSINESS",
+             "Citi weighs return\nto Venezuela",
+             "Citigroup is weighing a return to Venezuela five years "
+             "after exiting, Bloomberg reported on Wednesday."),
+        ]
+        col_w = (INNER - 24) // 2  # 460
+        row_h = 128
+        y0 = 452
+        kick = load("sans_b", 14)
+        head = load("serif_b", 23)
+        body = load("sans", 15)
+        for i, (section, headline, text) in enumerate(stories):
+            col = i % 2
+            row = i // 2
+            x = EDGE + col * (col_w + 24)
+            y = y0 + row * row_h
+            self.d.text((x, y), section, font=kick, fill=RED_RGB)
+            y = self.block(x, y + 22, headline, head, col_w, gap=2,
+                           limit=2)
+            self.block(x, y + 4, text, body, col_w, gap=3, limit=3)
+        self.hline(y0 + 3 * row_h + 12)
 
+    def briefs(self):
+        y = 866
+        self.d.text((EDGE, y), "IN BRIEF", font=load("sans_b", 16),
+                    fill=RED_RGB)
+        y += 26
+        body = load("sans", 16)
+        items = [
+            "Germany's final Q3 GDP is due today; Ifo business morale "
+            "rose to 90.6 in November.",
+            "Japan's Nikkei is forecast to hit 65,000 by June 2027, a "
+            "Reuters poll showed.",
+            "Gold eased to $3,545 an ounce ahead of US inflation data; a "
+            "December Fed rise is ~96% priced.",
+        ]
+        for item in items:
+            self.d.text((EDGE, y), "\u2022", font=body, fill=RED_RGB)
+            y = self.block(EDGE + 20, y, item, body, INNER - 20, gap=3,
+                           limit=1)
+            y += 2
+        self.hline(962)
+        self.centred(972,
+                     "All events of Wednesday, 25 November 2026  -  "
+                     "Sources: Reuters, Xinhua, Australian Bureau of "
+                     "Statistics, UK Parliament",
+                     load("sans", 13), fill=FAINT_RGB)
 
-def draw_lead(draw):
-    x = MARGIN
-    y = 182
-    kicker = font("sans_bold", 16)
-    draw.text((x, y), "LEAD STORY  -  SPACE", font=kicker, fill=RED)
-    y += 26
-    head = font("serif_bold", 36)
-    y = text_block(draw, x, y,
-                   "Shenzhou-24 lifts off -\nfirst foreigner in orbit",
-                   head, 620, spacing=4, max_lines=2)
-    y += 8
-    body = font("sans", 19)
-    y = text_block(
-        draw, x, y,
-        "China launched Shenzhou-24 from Jiuquan at 08:18 on Wednesday, "
-        "carrying Tang Hongbo, Wu Yi and Pakistani payload specialist "
-        "Muhammad Zeeshan Ali - the first Pakistani in orbit and the "
-        "first foreign astronaut to visit China's Tiangong station. "
-        "Docking was due about three and a half hours after liftoff.",
-        body, 620, spacing=6, max_lines=5)
-    # Right-hand numbers panel.
-    px0, py0, px1, py1 = 692, 182, W - MARGIN, 440
-    draw.rectangle([px0, py0, px1, py1], fill=PANEL, outline=PANEL_EDGE,
-                   width=2)
-    cx = px0 + 18
-    lab = font("sans_bold", 14)
-    draw.text((cx, py0 + 12), "THE LAUNCH IN NUMBERS", font=lab, fill=MUTED)
-    big = font("sans_bold", 52)
-    draw.text((cx, py0 + 38), "08:18", font=big, fill=GREEN)
-    cap = font("sans", 15)
-    draw.text((cx, py0 + 98), "Liftoff, Jiuquan, Wednesday", font=cap,
-              fill=INK)
-    draw.text((cx, py0 + 118), "Long March-2F rocket, three crew,",
-              font=cap, fill=INK)
-    draw.text((cx, py0 + 138), "docking ~3.5 hours later.",
-              font=cap, fill=INK)
-    rule(draw, py0 + 166, x0=px0 + 18, x1=px1 - 18, width=1)
-    draw.text((cx, py0 + 176), "THE CREW", font=lab, fill=MUTED)
-    crew_f = font("sans", 14)
-    crew = [("Tang Hongbo", "commander"),
-            ("Wu Yi", "flight engineer"),
-            ("M. Zeeshan Ali", "payload specialist")]
-    by = py0 + 198
-    for name, role in crew:
-        draw.text((cx, by), name, font=crew_f, fill=INK)
-        draw.text((cx + 118, by), role, font=crew_f, fill=MUTED)
-        by += 19
-    rule(draw, 456)
-
-
-GRID = [
-    ("ECONOMY",
-     "Australia's inflation\njumps to 4.9%",
-     "October CPI rose 4.9% from a year earlier, above the 4.8% forecast "
-     "and up from 4.3% in September. Core inflation hit 3.8%, keeping "
-     "another rate rise in play."),
-    ("TRADE",
-     "US set to unveil new\nSection 301 tariffs",
-     "Washington is poised to release findings of its probe into excess "
-     "factory capacity in 16 trading partners, with new duties expected "
-     "as soon as Tuesday or Wednesday."),
-    ("ECONOMY",
-     "US inflation and GDP\ndata due tonight",
-     "October PCE - the Fed's preferred inflation gauge - and the second "
-     "estimate of third-quarter GDP land at 8:30 a.m. ET, the last big "
-     "data before the Fed's December meeting."),
-    ("MARKETS",
-     "Nvidia bounce fades;\nNasdaq falls 1.5%",
-     "Nvidia shares slid 6% on Tuesday after Monday's 31.5% surge on "
-     "Jensen Huang's return. The S&P 500 fell 0.5% as investors turned "
-     "to Wednesday's US data."),
-    ("UNITED KINGDOM",
-     "Bank of England chief\nfaces MPs today",
-     "Governor Andrew Bailey and three rate-setters appear before the "
-     "Treasury Committee at 14:15 to defend November's rate rise to 4%. "
-     "Ofgem also sets the energy price cap today."),
-    ("BUSINESS",
-     "Citi weighs return\nto Venezuela",
-     "Citigroup is weighing a return to Venezuela five years after "
-     "exiting, Bloomberg reported on Wednesday."),
-]
-
-
-def draw_grid(draw):
-    col_w = (CW - 24) // 2  # 464
-    row_h = 128
-    y0 = 472
-    kicker = font("sans_bold", 14)
-    head = font("serif_bold", 23)
-    body = font("sans", 15)
-    for i, (kick, headline, text) in enumerate(GRID):
-        col = i % 2
-        row = i // 2
-        x = MARGIN + col * (col_w + 24)
-        y = y0 + row * row_h
-        draw.text((x, y), kick, font=kicker, fill=RED)
-        y += 22
-        y = text_block(draw, x, y, headline, head, col_w, spacing=2,
-                       max_lines=2)
-        y += 3
-        text_block(draw, x, y, text, body, col_w, spacing=3, max_lines=3)
-    rule(draw, y0 + 3 * row_h + 4)
-
-
-BRIEFS = [
-    "Germany's final Q3 GDP is due today; Ifo business morale rose to "
-    "90.6 in November.",
-    "Japan's Nikkei is forecast to hit 65,000 by June 2027, a Reuters "
-    "poll showed.",
-    "Gold eased to $3,545 an ounce ahead of US inflation data; a December "
-    "Fed rise is ~96% priced.",
-]
-
-
-def draw_briefs(draw):
-    y = 866
-    head = font("sans_bold", 16)
-    draw.text((MARGIN, y), "IN BRIEF", font=head, fill=RED)
-    y += 26
-    body = font("sans", 16)
-    for item in BRIEFS:
-        draw.text((MARGIN, y), "\u2022", font=body, fill=RED)
-        y = text_block(draw, MARGIN + 20, y, item, body, CW - 20,
-                       spacing=3, max_lines=1)
-        y += 2
-    rule(draw, 968)
-    foot = font("sans", 13)
-    centered(draw, 978,
-             "All events of Wednesday, 25 November 2026  -  Sources: "
-             "Reuters, Xinhua, Australian Bureau of Statistics, UK Parliament",
-             foot, fill=MUTED)
+    def draw(self):
+        self.masthead()
+        self.lead()
+        self.grid()
+        self.briefs()
+        return self.img
 
 
 def main():
@@ -238,14 +234,10 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "entry.png")
 
-    img = Image.new("RGB", (W, H), PAPER)
-    draw = ImageDraw.Draw(img)
-    draw_masthead(draw)
-    draw_lead(draw)
-    draw_grid(draw)
-    draw_briefs(draw)
-
+    poster = Poster()
+    img = poster.draw()
     img.save(out_path, format="PNG", optimize=True)
+
     size = os.path.getsize(out_path)
     print("wrote %s (%d bytes)" % (out_path, size))
     if size > 1048576:
